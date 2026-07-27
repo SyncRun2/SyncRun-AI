@@ -1,0 +1,5 @@
+easyocr
+fastapi
+uvicorn
+python-multipart
+pydantic
