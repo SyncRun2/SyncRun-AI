@@ -85,11 +85,3 @@ class RunningOcrEngine:
 
         return None
 
-if __name__ == "__main__":
-    engine = RunningOcrEngine()
-
-    result = engine.extract_running_data(
-        "test.jpg"
-    )
-
-    print(result)
