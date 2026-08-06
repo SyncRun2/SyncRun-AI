@@ -1,23 +1,25 @@
-# Python 캐시
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
 
 # 가상환경
 .venv/
 venv/
+env/
 
-# 환경변수
+# 환경변수 및 비밀정보
 .env
+.env.*
 
-# VS Code
+# IDE
 .vscode/
+.idea/
 
-# 테스트 이미지
-test*.jpg
-test*.jpeg
-test*.png
-test*.webp
+# 로그와 임시파일
+*.log
+*.tmp
 
-# 임시 파일
-temp/
-uploads/
+# 운영체제
+.DS_Store
+Thumbs.db
