@@ -5,3 +5,5 @@ python-multipart
 pydantic
 numpy
 scikit-learn
+torch
+torchvision
