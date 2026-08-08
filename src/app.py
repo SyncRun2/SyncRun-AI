@@ -6,11 +6,10 @@ import os
 import tempfile
 
 from pathlib import Path
-from typing import Optional
 
 
 # ==============================
-# 2. FastAPI 및 Pydantic
+# 2. FastAPI
 # ==============================
 
 from fastapi import (
@@ -20,33 +19,38 @@ from fastapi import (
     UploadFile,
 )
 
-from pydantic import BaseModel
-
 
 # ==============================
-# 3. AI 엔진 및 데이터 모듈
+# 3. OCR 엔진
 # ==============================
-
-from matching_kmeans_engine import (
-    GoalAwareKMeansMatchingEngine,
-)
-
-from mock_repository import (
-    MockMatchRepository,
-)
 
 from running_ocr_engine import (
     RunningOcrEngine,
 )
 
-from schemas import (
-    MatchRequest,
-    MatchResponse,
+
+# ==============================
+# 4. 매칭 엔진
+# ==============================
+
+from matching_kmeans_engine import (
+    GoalAwareKMeansGroupMatchingEngine,
 )
 
 
 # ==============================
-# 4. FastAPI 앱 생성
+# 5. Schema
+# ==============================
+
+from schemas import (
+    MatchBatchResponse,
+    MatchingBatchRequest,
+    RunningOcrResponse,
+)
+
+
+# ==============================
+# 6. FastAPI 앱
 # ==============================
 
 app = FastAPI(
@@ -55,51 +59,29 @@ app = FastAPI(
     ),
     description=(
         "러닝 기록 OCR 및 "
-        "K-Means 기반 러닝 그룹 추천 API"
+        "K-Means 기반 러닝 그룹 "
+        "매칭 AI API"
     ),
-    version="1.0.0",
+    version="2.0.0",
 )
 
 
 # ==============================
-# 5. AI 엔진 및 저장소 생성
+# 7. AI 엔진 초기화
 # ==============================
 
 ocr_engine = (
     RunningOcrEngine()
 )
 
+
 matching_engine = (
-    GoalAwareKMeansMatchingEngine()
-)
-
-match_repository = (
-    MockMatchRepository()
+    GoalAwareKMeansGroupMatchingEngine()
 )
 
 
 # ==============================
-# 6. OCR 응답 데이터 모델
-# ==============================
-
-class RunningOcrResponse(
-    BaseModel
-):
-    """
-    러닝 기록 OCR 분석 결과
-    """
-
-    average_pace_sec: Optional[
-        int
-    ]
-
-    total_distance_km: Optional[
-        float
-    ]
-
-
-# ==============================
-# 7. 기본 접속 API
+# 8. 기본 API
 # ==============================
 
 @app.get(
@@ -107,7 +89,7 @@ class RunningOcrResponse(
 )
 def root():
     """
-    기본 주소 접속 결과를 반환한다.
+    서버 기본 정보
     """
 
     return {
@@ -122,13 +104,13 @@ def root():
             "/ocr/running-record"
         ),
         "matching": (
-            "/api/ai/matches/recommend"
+            "/api/ai/matches/group"
         ),
     }
 
 
 # ==============================
-# 8. 서버 상태 확인 API
+# 9. Health Check
 # ==============================
 
 @app.get(
@@ -136,7 +118,7 @@ def root():
 )
 def health_check():
     """
-    서버 실행 상태를 확인한다.
+    서버 상태 확인
     """
 
     return {
@@ -150,7 +132,7 @@ def health_check():
 
 
 # ==============================
-# 9. 러닝 기록 OCR API
+# 10. 러닝 기록 OCR
 # ==============================
 
 @app.post(
@@ -162,18 +144,19 @@ def health_check():
 async def analyze_running_record(
     file: UploadFile = File(
         ...,
-        description=(
-            "러닝 기록 스크린샷"
-        ),
     ),
 ):
     """
-    러닝 기록 이미지를 분석하여
-    평균 페이스와 총 거리를 반환한다.
+    러닝 기록 이미지에서
+
+    평균 페이스
+    총 거리
+
+    를 추출한다.
     """
 
     # ==============================
-    # 9-1. 이미지 형식 검사
+    # 10-1. 허용 형식
     # ==============================
 
     allowed_content_types = {
@@ -182,10 +165,12 @@ async def analyze_running_record(
         "image/webp",
     }
 
+
     content_type = (
         file.content_type
         or ""
     ).lower()
+
 
     if (
         content_type
@@ -199,10 +184,12 @@ async def analyze_running_record(
             ),
         )
 
+
     original_filename = (
         file.filename
         or "upload.jpg"
     )
+
 
     suffix = (
         Path(
@@ -212,6 +199,7 @@ async def analyze_running_record(
         .lower()
     )
 
+
     allowed_suffixes = {
         ".jpg",
         ".jpeg",
@@ -219,22 +207,26 @@ async def analyze_running_record(
         ".webp",
     }
 
+
     if (
         suffix
         not in allowed_suffixes
     ):
         suffix = ".jpg"
 
+
     temp_path = None
+
 
     try:
         # ==============================
-        # 9-2. 이미지 임시 저장
+        # 10-2. 이미지 읽기
         # ==============================
 
         image_bytes = (
             await file.read()
         )
+
 
         if len(
             image_bytes
@@ -246,6 +238,11 @@ async def analyze_running_record(
                     "비어 있습니다."
                 ),
             )
+
+
+        # ==============================
+        # 10-3. 임시 저장
+        # ==============================
 
         with tempfile.NamedTemporaryFile(
             delete=False,
@@ -259,45 +256,25 @@ async def analyze_running_record(
                 temp_file.name
             )
 
+
         # ==============================
-        # 9-3. OCR 분석
+        # 10-4. OCR
         # ==============================
 
         result = (
             ocr_engine
             .extract_running_data(
-                image_path=(
-                    temp_path
-                )
+                temp_path
             )
         )
 
-        # ==============================
-        # 9-4. 추출 결과 확인
-        # ==============================
-
-        if (
-            result[
-                "average_pace_sec"
-            ]
-            is None
-            and result[
-                "total_distance_km"
-            ]
-            is None
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "이미지에서 평균 페이스와 "
-                    "총 거리를 찾지 못했습니다."
-                ),
-            )
 
         return result
 
+
     except HTTPException:
         raise
+
 
     except Exception as error:
         raise HTTPException(
@@ -307,12 +284,10 @@ async def analyze_running_record(
             ),
         ) from error
 
-    finally:
-        # ==============================
-        # 9-5. 임시 파일 정리
-        # ==============================
 
+    finally:
         await file.close()
+
 
         if (
             temp_path is not None
@@ -326,36 +301,37 @@ async def analyze_running_record(
 
 
 # ==============================
-# 10. AI 러닝 그룹 추천 API
+# 11. AI 그룹 매칭 API
 # ==============================
 
 @app.post(
-    "/api/ai/matches/recommend",
-    response_model=MatchResponse,
+    "/api/ai/matches/group",
+    response_model=(
+        MatchBatchResponse
+    ),
 )
-def recommend_running_group(
-    request: MatchRequest,
+def group_running_users(
+    request: MatchingBatchRequest,
 ):
     """
-    현재 사용자의 매칭 요청을 기반으로
-    AI 러닝 그룹을 추천한다.
-    """
+    백엔드에서 현재 MATCHING 상태인
+    사용자들을 한 번에 전달받는다.
 
-    pending_requests = (
-        match_repository
-        .get_pending_requests()
-    )
+    AI는 실제로 완성된 그룹만
+    Backend에 반환한다.
+
+    그룹에 포함되지 않은 요청은
+    Response에 포함하지 않는다.
+    """
 
     result = (
         matching_engine
-        .recommend_group(
-            target_request=(
-                request
-            ),
-            pending_requests=(
-                pending_requests
-            ),
+        .recommend_groups(
+            requests=(
+                request.requests
+            )
         )
     )
+
 
     return result
