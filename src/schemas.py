@@ -397,3 +397,109 @@ class MatchBatchResponse(
     groups: List[
         MatchGroupResponse
     ]
+
+
+# ==============================
+# 8. 코스 추천 Request Schema
+# ==============================
+
+class CourseRecommendationRequest(
+    BaseModel
+):
+    """
+    백엔드에서 AI 서버로 전달하는
+    코스 추천 요청 데이터
+    """
+
+    sessionId: int = Field(
+        gt=0,
+    )
+
+    regionSido: str
+
+    regionSigungu: str
+
+    regionDongs: List[
+        str
+    ] = Field(
+        min_length=1,
+    )
+
+    groupSize: int = Field(
+        ge=1,
+    )
+
+    paceMinSec: int = Field(
+        ge=60,
+        le=1800,
+    )
+
+    paceMaxSec: int = Field(
+        ge=60,
+        le=1800,
+    )
+
+
+    # ==============================
+    # 8-1. 페이스 범위 검증
+    # ==============================
+
+    @model_validator(
+        mode="after"
+    )
+    def validate_pace_range(
+        self,
+    ):
+        if (
+            self.paceMinSec
+            > self.paceMaxSec
+        ):
+            raise ValueError(
+                "paceMinSec은 "
+                "paceMaxSec보다 "
+                "작거나 같아야 합니다."
+            )
+
+        return self
+
+
+# ==============================
+# 9. 개별 추천 코스 Response
+# ==============================
+
+class RecommendedCourseResponse(
+    BaseModel
+):
+    """
+    Gemini가 생성한 개별 코스 추천
+    """
+
+    name: str
+
+    regionDescription: str
+
+    distanceKm: float
+
+    difficulty: str
+
+    routeDescription: str
+
+    reason: str
+
+
+# ==============================
+# 10. 전체 코스 추천 Response
+# ==============================
+
+class CourseRecommendationResponse(
+    BaseModel
+):
+    """
+    AI 서버 → Backend
+
+    Gemini가 생성한 코스 추천 목록
+    """
+
+    courses: List[
+        RecommendedCourseResponse
+    ]

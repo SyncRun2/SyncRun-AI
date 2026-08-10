@@ -7,3 +7,5 @@ numpy
 scikit-learn
 torch
 torchvision
+python-dotenv
+google-genai

@@ -6,6 +6,16 @@ import os
 import tempfile
 
 from pathlib import Path
+from typing import Optional
+
+
+# ==============================
+# 1-1. 환경 변수(.env) 로드
+# ==============================
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # ==============================
@@ -39,10 +49,21 @@ from matching_kmeans_engine import (
 
 
 # ==============================
+# 4-1. 코스 추천 엔진
+# ==============================
+
+from course_recommendation_engine import (
+    GeminiCourseRecommendationEngine,
+)
+
+
+# ==============================
 # 5. Schema
 # ==============================
 
 from schemas import (
+    CourseRecommendationRequest,
+    CourseRecommendationResponse,
     MatchBatchResponse,
     MatchingBatchRequest,
     RunningOcrResponse,
@@ -81,6 +102,32 @@ matching_engine = (
 
 
 # ==============================
+# 7-1. 코스 추천 엔진 (지연 초기화)
+# ==============================
+#
+# GEMINI_API_KEY가 아직 없어도
+# 서버 전체가 죽지 않도록,
+# 실제 요청이 올 때 초기화한다.
+
+course_recommendation_engine: Optional[
+    GeminiCourseRecommendationEngine
+] = None
+
+
+def get_course_recommendation_engine() -> (
+    GeminiCourseRecommendationEngine
+):
+    global course_recommendation_engine
+
+    if course_recommendation_engine is None:
+        course_recommendation_engine = (
+            GeminiCourseRecommendationEngine()
+        )
+
+    return course_recommendation_engine
+
+
+# ==============================
 # 8. 기본 API
 # ==============================
 
@@ -105,6 +152,9 @@ def root():
         ),
         "matching": (
             "/api/ai/matches/group"
+        ),
+        "courseRecommendation": (
+            "/api/ai/courses/recommend"
         ),
     }
 
@@ -335,3 +385,42 @@ def group_running_users(
 
 
     return result
+
+
+# ==============================
+# 12. AI 코스 추천 API
+# ==============================
+
+@app.post(
+    "/api/ai/courses/recommend",
+    response_model=(
+        CourseRecommendationResponse
+    ),
+)
+def recommend_courses(
+    request: CourseRecommendationRequest,
+):
+    """
+    세션 그룹의 공통 지역과 희망 페이스를 바탕으로
+
+    Gemini API가 생성한 러닝 코스 추천 목록을
+    반환한다.
+    """
+
+    try:
+        engine = (
+            get_course_recommendation_engine()
+        )
+
+        return engine.recommend(
+            request
+        )
+
+
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(
+                error
+            ),
+        ) from error
