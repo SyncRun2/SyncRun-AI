@@ -30,6 +30,10 @@ from sklearn.feature_extraction import (
     DictVectorizer,
 )
 
+from sklearn.metrics import (
+    silhouette_score,
+)
+
 
 # ==============================
 # 3. Schema
@@ -64,19 +68,6 @@ class GoalAwareKMeansGroupMatchingEngine:
     def __init__(
         self,
     ):
-        # ==============================
-        # 4-1. K-Means Feature Weight
-        # ==============================
-
-        self.feature_weights = {
-            "dong": 1.50,
-            "goal": 1.20,
-            "time": 1.50,
-            "pace": 1.40,
-            "group_size": 0.80,
-        }
-
-
         # ==============================
         # 4-2. Compatibility Weight
         # ==============================
@@ -245,8 +236,19 @@ class GoalAwareKMeansGroupMatchingEngine:
         Dict
     ]:
         """
-        하나의 Pool에서
-        가능한 그룹들을 생성한다.
+        하나의 Pool을
+        페이스 기준 K-Means Cluster로
+        먼저 나눈 뒤,
+
+        각 Cluster 내부에서만
+        그룹을 생성한다.
+
+        Cluster 경계를 벗어난 매칭은
+        시도하지 않는다. 이번 라운드에
+        묶이지 못한 사람은 matching 상태로
+        남아 다음 요청 도착 시
+        Pool 전체가 재구성되며
+        다시 시도된다.
         """
 
         if not requests:
@@ -254,7 +256,7 @@ class GoalAwareKMeansGroupMatchingEngine:
 
 
         # ==============================
-        # 7-1. K-Means
+        # 7-1. 페이스 기준 K-Means
         # ==============================
 
         cluster_map = (
@@ -265,7 +267,72 @@ class GoalAwareKMeansGroupMatchingEngine:
 
 
         # ==============================
-        # 7-2. 아직 그룹에 들어가지 않은 요청
+        # 7-2. Cluster 단위로 분할
+        # ==============================
+
+        clustered_requests: Dict[
+            int,
+            List[
+                MatchingRequest
+            ],
+        ] = {}
+
+
+        for request in requests:
+            cluster_label = (
+                cluster_map[
+                    request.requestId
+                ]
+            )
+
+            clustered_requests.setdefault(
+                cluster_label,
+                [],
+            ).append(
+                request
+            )
+
+
+        # ==============================
+        # 7-3. Cluster별 매칭
+        # ==============================
+
+        groups = []
+
+
+        for cluster_requests in (
+            clustered_requests
+            .values()
+        ):
+            groups.extend(
+                self._match_cluster(
+                    cluster_requests
+                )
+            )
+
+
+        return groups
+
+
+    # ==============================
+    # 7-A. Cluster 내부 그룹 생성
+    # ==============================
+
+    def _match_cluster(
+        self,
+        requests: List[
+            MatchingRequest
+        ],
+    ) -> List[
+        Dict
+    ]:
+        """
+        하나의 Cluster 안에서
+        가능한 그룹들을 생성한다.
+        """
+
+        # ==============================
+        # 아직 그룹에 들어가지 않은 요청
         # ==============================
 
         remaining = list(
@@ -280,7 +347,7 @@ class GoalAwareKMeansGroupMatchingEngine:
 
 
         # ==============================
-        # 7-3. 반복 매칭
+        # 반복 매칭
         # ==============================
 
         while remaining:
@@ -317,9 +384,6 @@ class GoalAwareKMeansGroupMatchingEngine:
                 self._find_best_group(
                     seed=seed,
                     remaining=remaining,
-                    cluster_map=(
-                        cluster_map
-                    ),
                 )
             )
 
@@ -443,11 +507,12 @@ class GoalAwareKMeansGroupMatchingEngine:
 
 
         # ==============================
-        # 8-3. Cluster 개수
+        # 8-3. 실루엣 스코어 기반
+        # 최적 Cluster 라벨링
         # ==============================
 
-        cluster_count = (
-            self._calculate_cluster_count(
+        labels = (
+            self._cluster_by_silhouette(
                 requests=(
                     requests
                 ),
@@ -456,44 +521,6 @@ class GoalAwareKMeansGroupMatchingEngine:
                 ),
             )
         )
-
-
-        # ==============================
-        # 8-4. Cluster 1개
-        # ==============================
-
-        if (
-            cluster_count
-            <= 1
-        ):
-            labels = np.zeros(
-                len(
-                    requests
-                ),
-                dtype=int,
-            )
-
-
-        # ==============================
-        # 8-5. K-Means
-        # ==============================
-
-        else:
-            model = KMeans(
-                n_clusters=(
-                    cluster_count
-                ),
-                init="k-means++",
-                n_init=10,
-                random_state=42,
-            )
-
-
-            labels = (
-                model.fit_predict(
-                    feature_matrix
-                )
-            )
 
 
         return {
@@ -520,63 +547,17 @@ class GoalAwareKMeansGroupMatchingEngine:
         float,
     ]:
         """
-        동 / 목표 / 시간 / 페이스 /
-        희망 그룹 크기를
+        페이스 중앙값 / 범위를
         Feature Vector로 변환한다.
+
+        동 / 목표 / 시간은
+        Pool 필터, 하드 제약(공통 시간대),
+        Pairwise 궁합 점수에서 이미
+        처리되므로 K-Means에는 넣지 않는다.
+
+        페이스는 다른 곳에서 강제되지 않는
+        유일한 연속값이라 군집화 축으로 삼는다.
         """
-
-        preferred_duration = (
-            request.preferredEndAt
-            - request.preferredStartAt
-        )
-
-
-        # ==============================
-        # 선호 시간 중앙값
-        # ==============================
-
-        midpoint_datetime = (
-            request.preferredStartAt
-            + (
-                preferred_duration
-                / 2
-            )
-        )
-
-
-        midpoint_minutes = (
-            midpoint_datetime.hour
-            * 60
-            +
-            midpoint_datetime.minute
-            +
-            midpoint_datetime.second
-            / 60
-        )
-
-
-        # ==============================
-        # 시간 Circular Encoding
-        # ==============================
-
-        time_angle = (
-            2
-            * math.pi
-            * midpoint_minutes
-            / 1440
-        )
-
-
-        duration_minutes = (
-            preferred_duration
-            .total_seconds()
-            / 60
-        )
-
-
-        # ==============================
-        # 페이스
-        # ==============================
 
         pace_center = (
             request.paceMinSec
@@ -590,131 +571,47 @@ class GoalAwareKMeansGroupMatchingEngine:
         )
 
 
-        # ==============================
-        # 기본 Feature
-        # ==============================
-
-        feature_record = {
-            (
-                "goal="
-                + request.runningGoal
-            ): (
-                self.feature_weights[
-                    "goal"
-                ]
-            ),
-
-            "time_sin": (
-                math.sin(
-                    time_angle
-                )
-                * self.feature_weights[
-                    "time"
-                ]
-            ),
-
-            "time_cos": (
-                math.cos(
-                    time_angle
-                )
-                * self.feature_weights[
-                    "time"
-                ]
-            ),
-
-            "time_duration": (
-                duration_minutes
-                / 240
-            ),
-
+        return {
             "pace_center": (
                 pace_center
                 / 600
-                * self.feature_weights[
-                    "pace"
-                ]
             ),
 
             "pace_width": (
                 pace_width
                 / 180
-                * self.feature_weights[
-                    "pace"
-                ]
-            ),
-
-            "group_size_min": (
-                request.groupSizeMin
-                / 10
-                * self.feature_weights[
-                    "group_size"
-                ]
-            ),
-
-            "group_size_max": (
-                request.groupSizeMax
-                / 10
-                * self.feature_weights[
-                    "group_size"
-                ]
             ),
         }
 
 
-        # ==============================
-        # 9-1. 복수 동 Multi-Hot Encoding
-        # ==============================
-
-        dong_count = len(
-            request.regionDongs
-        )
-
-
-        # 여러 동을 많이 선택했다고 해서
-        # 전체 Feature 영향력이 과도하게
-        # 커지는 것을 방지한다.
-        dong_weight = (
-            self.feature_weights[
-                "dong"
-            ]
-            / math.sqrt(
-                dong_count
-            )
-        )
-
-
-        for dong in (
-            request.regionDongs
-        ):
-            feature_record[
-                "dong="
-                + dong
-            ] = dong_weight
-
-
-        return feature_record
-
-
     # ==============================
-    # 10. K-Means Cluster 수 계산
+    # 10. 실루엣 스코어 기반
+    # Cluster 라벨링
     # ==============================
 
-    def _calculate_cluster_count(
+    def _cluster_by_silhouette(
         self,
         requests: List[
             MatchingRequest
         ],
         feature_matrix: np.ndarray,
-    ) -> int:
+    ) -> np.ndarray:
         """
-        사용자 수와 평균 희망 그룹 크기를
-        기준으로 Cluster 개수를 계산한다.
+        평균 희망 그룹 크기로 추정한 k
+        주변을 후보로 놓고,
+        실루엣 스코어가 가장 높은 k의
+        Cluster 라벨을 반환한다.
         """
 
         sample_count = len(
             requests
         )
 
+
+        # ==============================
+        # 10-1. 평균 희망 그룹 크기
+        # 기준 k 추정 (탐색 중심점)
+        # ==============================
 
         average_group_size = (
             sum(
@@ -741,6 +638,11 @@ class GoalAwareKMeansGroupMatchingEngine:
         )
 
 
+        # ==============================
+        # 10-2. 실제로 가능한
+        # 최대 Cluster 개수
+        # ==============================
+
         unique_vector_count = (
             np.unique(
                 feature_matrix,
@@ -752,16 +654,126 @@ class GoalAwareKMeansGroupMatchingEngine:
         )
 
 
-        cluster_count = min(
-            estimated_cluster_count,
-            sample_count,
+        max_feasible_k = min(
+            sample_count - 1,
             unique_vector_count,
         )
 
 
-        return max(
-            1,
-            cluster_count,
+        if (
+            max_feasible_k
+            < 2
+        ):
+            return np.zeros(
+                sample_count,
+                dtype=int,
+            )
+
+
+        # ==============================
+        # 10-3. 추정 k 주변에서
+        # 실루엣 스코어 탐색
+        # ==============================
+
+        search_radius = 2
+
+        candidate_k_values = [
+            k
+            for k in range(
+                max(
+                    2,
+                    estimated_cluster_count
+                    - search_radius,
+                ),
+                min(
+                    max_feasible_k,
+                    estimated_cluster_count
+                    + search_radius,
+                )
+                + 1,
+            )
+        ]
+
+        if not candidate_k_values:
+            candidate_k_values = [
+                max(
+                    2,
+                    min(
+                        max_feasible_k,
+                        estimated_cluster_count,
+                    ),
+                )
+            ]
+
+
+        best_labels = None
+
+        best_silhouette_score = -1.0
+
+
+        for k in candidate_k_values:
+            model = KMeans(
+                n_clusters=k,
+                init="k-means++",
+                n_init=10,
+                random_state=42,
+            )
+
+
+            labels = (
+                model.fit_predict(
+                    feature_matrix
+                )
+            )
+
+
+            # ==============================
+            # 실루엣 스코어는
+            # 2개 이상의 Cluster가
+            # 실제로 나뉜 경우에만 계산 가능
+            # ==============================
+
+            if (
+                len(
+                    np.unique(
+                        labels
+                    )
+                )
+                < 2
+            ):
+                continue
+
+
+            score = silhouette_score(
+                feature_matrix,
+                labels,
+            )
+
+
+            if (
+                score
+                > best_silhouette_score
+            ):
+                best_silhouette_score = (
+                    score
+                )
+
+                best_labels = labels
+
+
+        if best_labels is not None:
+            return best_labels
+
+
+        # ==============================
+        # 10-4. 모든 후보에서
+        # 유효한 Cluster를
+        # 만들지 못한 경우 (Fallback)
+        # ==============================
+
+        return np.zeros(
+            sample_count,
+            dtype=int,
         )
 
 
@@ -924,10 +936,6 @@ class GoalAwareKMeansGroupMatchingEngine:
         remaining: List[
             MatchingRequest
         ],
-        cluster_map: Dict[
-            int,
-            int,
-        ],
     ) -> Optional[
         List[
             MatchingRequest
@@ -938,10 +946,13 @@ class GoalAwareKMeansGroupMatchingEngine:
 
         - 최소/최대 그룹 인원
         - 시간
-        - K-Means Cluster
         - 궁합 점수
 
         를 고려해 최적 그룹을 찾는다.
+
+        remaining은 이미 같은
+        K-Means Cluster로 필터링된
+        상태로 전달된다.
         """
 
         other_requests = [
@@ -1023,38 +1034,10 @@ class GoalAwareKMeansGroupMatchingEngine:
                 )
 
 
-                # ==============================
-                # 같은 K-Means Cluster 여부
-                # ==============================
-
-                same_cluster = (
-                    cluster_map.get(
-                        seed.requestId
-                    )
-                    == cluster_map.get(
-                        candidate.requestId
-                    )
-                )
-
-
-                # ==============================
-                # Cluster Bonus
-                # ==============================
-
-                ranking_score = (
-                    compatibility_score
-                    + (
-                        5.0
-                        if same_cluster
-                        else 0.0
-                    )
-                )
-
-
                 eligible_candidates.append(
                     (
                         candidate,
-                        ranking_score,
+                        compatibility_score,
                     )
                 )
 
